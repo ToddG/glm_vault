@@ -16,15 +16,29 @@ pub opaque type Vault {
   Vault(secrets: dict.Dict(String, Toml))
 }
 
+pub fn new_vault(secrets: dict.Dict(String, Toml)) -> Vault {
+  Vault(secrets:)
+}
+
 pub type VaultError {
-  UnableToFindSecretMissingKey
-  UnableToDecryptFile(encfile.EncFileError, encfile.EncryptedFile, encfile.PasswordFile)
-  UnableToParseDecryptedToml(tom.ParseError, encfile.EncryptedFile, encfile.PasswordFile)
-  UnableToEncryptFile(encfile.EncFileError)
+  UnableToDecryptFile(
+    encfile.EncFileError,
+    encfile.EncryptedFile,
+    encfile.PasswordFile,
+  )
+  UnableToParseDecryptedToml(
+    tom.ParseError,
+    encfile.EncryptedFile,
+    encfile.PasswordFile,
+  )
   UnableToSerializeItemGetError(Nil, String)
-  UnableToSerializeType(Toml)
   UnableToSerializeUnsupportdType(Toml)
-  UnableToCreateTempFile(simplifile.FileError)
+  UnableToGetIntFromVault(tom.GetError)
+  UnableToGetFloatFromVault(tom.GetError)
+  UnableToGetBoolFromVault(tom.GetError)
+  UnableToGetStringFromVault(tom.GetError)
+  UnableToEncryptFile(encfile.EncryptedFile)
+  UnableToWritePassword(simplifile.FileError)
 }
 
 pub fn decrypt(
@@ -72,6 +86,7 @@ fn serialize(d: dict.Dict(String, Toml)) -> Result(List(String), VaultError) {
   |> result.all
 }
 
+// TODO: replace this janky serialization code with proper (full) toml serialization
 fn serialize_item(
   key: String,
   value: Result(Toml, Nil),
@@ -104,6 +119,10 @@ pub fn encrypt(
 ) -> Result(Nil, VaultError) {
   let result = {
     use temp_file <- temporary.create(temporary.file())
+    logging.log(
+      logging.Debug,
+      "opened temp file to write plaintext to: " <> temp_file,
+    )
     // write secrets to temporary file
     let _ =
       vault.secrets
@@ -111,47 +130,63 @@ pub fn encrypt(
       |> result.map(string.join(_, "\n"))
       |> result.map(simplifile.write(temp_file, _))
       |> result.map(fn(_) {
-        encfile.encrypt(
-          encfile.new_plaintext_file(temp_file),
-          encrypted_file,
-          password_file,
+        // encrypt the temporary file
+        let _ =
+          encfile.encrypt(
+            encfile.new_plaintext_file(temp_file),
+            encrypted_file,
+            password_file,
+          )
+        logging.log(
+          logging.Debug,
+          "encrypted plaintext and wrote to: " <> encrypted_file.path,
         )
       })
+    // the temporary file is disposed of when we exit this scope
+    Nil
   }
   case result {
-    Ok(_) -> Ok(Nil)
-    Error(encfile.EncFileError) -> Error(UnableToEncryptFile(e))
+    Ok(vault_result) -> Ok(vault_result)
+    Error(_temporary_file_error) -> Error(UnableToEncryptFile(encrypted_file))
   }
 }
 
-//pub fn get_int(v: Vault, key: String) -> Result(Int, VaultError) {
-//  todo
-//}
-//
-//pub fn set_int(v: Vault, key: String, value: Int) -> Result(Vault, VaultError) {
-//  todo
-//}
-//
-//pub fn get_float(v: Vault, key: String) -> Result(Float, VaultError) {
-//  todo
-//}
-//
-//pub fn set_float(
-//  v: Vault,
-//  key: String,
-//  value: Float,
-//) -> Result(Vault, VaultError) {
-//  todo
-//}
-//
-//pub fn get_string(v: Vault, key: String) -> Result(String, VaultError) {
-//  todo
-//}
-//
-//pub fn set_string(
-//  v: Vault,
-//  key: String,
-//  value: String,
-//) -> Result(Vault, VaultError) {
-//  todo
-//}
+pub fn get_int(v: Vault, key: String) -> Result(Int, VaultError) {
+  tom.get_int(v.secrets, [key])
+  |> result.map_error(UnableToGetIntFromVault)
+}
+
+pub fn set_int(v: Vault, key: String, value: Int) -> Vault {
+  let secrets = dict.insert(v.secrets, key, tom.Int(value))
+  Vault(secrets:)
+}
+
+pub fn get_float(v: Vault, key: String) -> Result(Float, VaultError) {
+  tom.get_float(v.secrets, [key])
+  |> result.map_error(UnableToGetFloatFromVault)
+}
+
+pub fn set_float(v: Vault, key: String, value: Float) -> Vault {
+  let secrets = dict.insert(v.secrets, key, tom.Float(value))
+  Vault(secrets:)
+}
+
+pub fn get_bool(v: Vault, key: String) -> Result(Bool, VaultError) {
+  tom.get_bool(v.secrets, [key])
+  |> result.map_error(UnableToGetBoolFromVault)
+}
+
+pub fn set_bool(v: Vault, key: String, value: Bool) -> Vault {
+  let secrets = dict.insert(v.secrets, key, tom.Bool(value))
+  Vault(secrets:)
+}
+
+pub fn get_string(v: Vault, key: String) -> Result(String, VaultError) {
+  tom.get_string(v.secrets, [key])
+  |> result.map_error(UnableToGetStringFromVault)
+}
+
+pub fn set_string(v: Vault, key: String, value: String) -> Vault {
+  let secrets = dict.insert(v.secrets, key, tom.String(value))
+  Vault(secrets:)
+}
