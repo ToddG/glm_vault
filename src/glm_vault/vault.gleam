@@ -1,65 +1,47 @@
+/// A library to read/write secrets to/from encrypted files.
 import gleam/bool
 import gleam/dict
 import gleam/float
 import gleam/int
 import gleam/list
 import gleam/result
+import gleam/set
 import gleam/string
-import glm_encrypted_file/encfile
-import logging
+import glm_encrypted_file/openssl
 import simplifile
+import temporary
 import tom.{type Toml}
 
-import temporary
-
+/// A vault is an opaque datatype that contains the secrets.
 pub opaque type Vault {
   Vault(secrets: dict.Dict(String, Toml))
 }
 
+/// Create a new vault.
 pub fn new_vault(secrets: dict.Dict(String, Toml)) -> Vault {
   Vault(secrets:)
 }
 
+/// Vault Errors
 pub type VaultError {
-  UnableToDecryptFile(
-    encfile.EncFileError,
-    encfile.EncryptedFile,
-    encfile.PasswordFile,
-  )
-  UnableToParseDecryptedToml(
-    tom.ParseError,
-    encfile.EncryptedFile,
-    encfile.PasswordFile,
-  )
-  UnableToSerializeItemGetError(Nil, String)
   UnableToSerializeUnsupportdType(Toml)
-  UnableToGetIntFromVault(tom.GetError)
-  UnableToGetFloatFromVault(tom.GetError)
-  UnableToGetBoolFromVault(tom.GetError)
-  UnableToGetStringFromVault(tom.GetError)
-  UnableToEncryptFile(encfile.EncryptedFile)
-  UnableToWritePassword(simplifile.FileError)
+  UnableToGetFromVault(tom.GetError)
+  UnableToDecryptFile(openssl.OpenSslError, String, String)
+  UnableToParseDecryptedToml(tom.ParseError, String, String)
+  UnableToEncryptFile(simplifile.FileError)
+  UnableToGetFromDict(String)
 }
 
+/// Decrypt an encrypted file and return a vault instance.
 pub fn decrypt(
-  encrypted_file: encfile.EncryptedFile,
-  password_file: encfile.PasswordFile,
+  encrypted_file: String,
+  password_file: String,
 ) -> Result(Vault, VaultError) {
-  use plaintext <- result.try(
-    encfile.decrypt(encrypted_file, password_file)
-    |> result.map(fn(plaintext) {
-      logging.log(
-        logging.Debug,
-        "decrypted encrypted file: "
-          <> encrypted_file.path
-          <> ", using password file: "
-          <> password_file.path,
-      )
-      plaintext
-    })
+  use plaintext: String <- result.try(
+    openssl.decrypt(encrypted_file, password_file)
+    |> result.map(fn(plaintext) { plaintext })
     |> result.map_error(UnableToDecryptFile(_, encrypted_file, password_file)),
   )
-
   plaintext
   |> tom.parse
   |> result.map_error(UnableToParseDecryptedToml(
@@ -67,62 +49,64 @@ pub fn decrypt(
     encrypted_file,
     password_file,
   ))
-  |> result.map(fn(secrets) {
-    logging.log(
-      logging.Debug,
-      "parsed encrypted file: "
-        <> encrypted_file.path
-        <> ", using password file: "
-        <> password_file.path,
-    )
-    Vault(secrets:)
-  })
+  |> result.map(fn(secrets) { Vault(secrets:) })
 }
 
-// TODO: replace this janky serialization code with proper (full) toml serialization
+/// Serialize dict that contains these datatypes: string, int, float, bool.
+/// Nested datatypes and arrays are not supported.
 fn serialize(d: dict.Dict(String, Toml)) -> Result(List(String), VaultError) {
   dict.keys(d)
-  |> list.map(fn(key) { serialize_item(key, dict.get(d, key)) })
+  |> list.map(fn(key) { serialize_item(d, key) })
   |> result.all
 }
 
-// TODO: replace this janky serialization code with proper (full) toml serialization
+/// Serialize a single item, so long as it is one of these supported datatypes:  string, int, float, bool.
+///
+/// Implementation details that should not concern the consumer:
+/// Items are serialized as `key = value` pairs in `toml` format.
 fn serialize_item(
+  d: dict.Dict(String, Toml),
   key: String,
-  value: Result(Toml, Nil),
 ) -> Result(String, VaultError) {
+  use value <- result.try(
+    dict.get(d, key)
+    |> result.map_error(fn(_) { UnableToGetFromDict(key) }),
+  )
+
   case value {
-    Error(e) -> Error(UnableToSerializeItemGetError(e, key))
-    Ok(found) ->
-      case found {
-        tom.Int(x) -> {
-          Ok(key <> " = " <> int.to_string(x))
-        }
-        tom.String(x) -> {
-          Ok(key <> " = " <> x)
-        }
-        tom.Bool(x) -> {
-          Ok(key <> " = " <> x |> bool.to_string)
-        }
-        tom.Float(x) -> {
-          Ok(key <> " = " <> x |> float.to_string)
-        }
-        t -> Error(UnableToSerializeUnsupportdType(t))
-      }
+    tom.Int(x) -> {
+      Ok(key <> " = " <> int.to_string(x))
+    }
+    tom.String(x) -> {
+      Ok(key <> " = " <> x)
+    }
+    tom.Bool(x) -> {
+      Ok(key <> " = " <> x |> bool.to_string)
+    }
+    tom.Float(x) -> {
+      Ok(key <> " = " <> x |> float.to_string)
+    }
+    t -> Error(UnableToSerializeUnsupportdType(t))
   }
 }
 
+/// Serialize a vault instance to a temporary file, then encrypt that file and delete the temporary file.
+/// Upon success, an encrypted file is created that contains the serialized contents of the vault.
 pub fn encrypt(
   vault: Vault,
-  encrypted_file: encfile.EncryptedFile,
-  password_file: encfile.PasswordFile,
+  encrypted_file: String,
+  password_file: String,
 ) -> Result(Nil, VaultError) {
   let result = {
+    // create a temporary file to hold plaintext secrets
     use temp_file <- temporary.create(temporary.file())
-    logging.log(
-      logging.Debug,
-      "opened temp file to write plaintext to: " <> temp_file,
-    )
+    let rw = set.from_list([simplifile.Read, simplifile.Write])
+    let none = set.from_list([])
+    use _ <- result.try(simplifile.set_permissions(
+      temp_file,
+      simplifile.FilePermissions(rw, none, none),
+    ))
+
     // write secrets to temporary file
     let _ =
       vault.secrets
@@ -131,29 +115,20 @@ pub fn encrypt(
       |> result.map(simplifile.write(temp_file, _))
       |> result.map(fn(_) {
         // encrypt the temporary file
-        let _ =
-          encfile.encrypt(
-            encfile.new_plaintext_file(temp_file),
-            encrypted_file,
-            password_file,
-          )
-        logging.log(
-          logging.Debug,
-          "encrypted plaintext and wrote to: " <> encrypted_file.path,
-        )
+        let _ = openssl.encrypt(temp_file, encrypted_file, password_file)
       })
     // the temporary file is disposed of when we exit this scope
-    Nil
+    Ok(Nil)
   }
   case result {
-    Ok(vault_result) -> Ok(vault_result)
-    Error(_temporary_file_error) -> Error(UnableToEncryptFile(encrypted_file))
+    Ok(_) -> Ok(Nil)
+    Error(e) -> Error(UnableToEncryptFile(e))
   }
 }
 
 pub fn get_int(v: Vault, key: String) -> Result(Int, VaultError) {
   tom.get_int(v.secrets, [key])
-  |> result.map_error(UnableToGetIntFromVault)
+  |> result.map_error(UnableToGetFromVault)
 }
 
 pub fn set_int(v: Vault, key: String, value: Int) -> Vault {
@@ -163,7 +138,7 @@ pub fn set_int(v: Vault, key: String, value: Int) -> Vault {
 
 pub fn get_float(v: Vault, key: String) -> Result(Float, VaultError) {
   tom.get_float(v.secrets, [key])
-  |> result.map_error(UnableToGetFloatFromVault)
+  |> result.map_error(UnableToGetFromVault)
 }
 
 pub fn set_float(v: Vault, key: String, value: Float) -> Vault {
@@ -173,7 +148,7 @@ pub fn set_float(v: Vault, key: String, value: Float) -> Vault {
 
 pub fn get_bool(v: Vault, key: String) -> Result(Bool, VaultError) {
   tom.get_bool(v.secrets, [key])
-  |> result.map_error(UnableToGetBoolFromVault)
+  |> result.map_error(UnableToGetFromVault)
 }
 
 pub fn set_bool(v: Vault, key: String, value: Bool) -> Vault {
@@ -183,7 +158,7 @@ pub fn set_bool(v: Vault, key: String, value: Bool) -> Vault {
 
 pub fn get_string(v: Vault, key: String) -> Result(String, VaultError) {
   tom.get_string(v.secrets, [key])
-  |> result.map_error(UnableToGetStringFromVault)
+  |> result.map_error(UnableToGetFromVault)
 }
 
 pub fn set_string(v: Vault, key: String, value: String) -> Vault {

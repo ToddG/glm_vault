@@ -1,5 +1,5 @@
 name = "glm_vault"
-version = "1.0.0"
+version = "2.0.0"
 
 description = "Read and write secrets to an encrypted file. Inspired by ansible's vault."
 licences = ["Apache-2.0"]
@@ -7,16 +7,10 @@ repository = { type = "github", user = "toddg", repo = "glm_vault" }
 
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
-filepath = ">= 1.1.2 and < 2.0.0"
-shellout = ">= 1.8.0 and < 2.0.0"
-simplifile = ">= 2.4.0 and < 3.0.0"
-logging = ">= 1.5.0 and < 2.0.0"
-clip = ">= 1.2.0 and < 2.0.0"
-argv = ">= 1.0.2 and < 2.0.0"
-pprint = ">= 1.0.6 and < 2.0.0"
-glm_encrypted_file = ">= 1.0.0 and < 2.0.0"
 tom = ">= 2.1.0 and < 3.0.0"
+glm_encrypted_file = ">= 2.0.2 and < 3.0.0"
 temporary = ">= 1.0.0 and < 2.0.0"
+simplifile = ">= 2.4.0 and < 3.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
