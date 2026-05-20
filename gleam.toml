@@ -1,5 +1,5 @@
 name = "glm_vault"
-version = "2.0.0"
+version = "2.1.0"
 
 description = "Read and write secrets to an encrypted file. Inspired by ansible's vault."
 licences = ["Apache-2.0"]
